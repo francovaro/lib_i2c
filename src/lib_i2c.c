@@ -31,7 +31,7 @@
 static ErrorStatus lib_I2C_check_timeout(uint32_t flag);
 
 static uint8_t _i2c_enabled[e_i2c_max] = {0};
-static void (*_timeout_function)(void) = NULL;
+static void (*_timeout_function)(uint16_t) = NULL;
 
 I2C_TypeDef *yI2C;
 
@@ -257,7 +257,7 @@ static ErrorStatus lib_I2C_check_timeout(uint32_t flag)
 	{
 		if (_timeout_function != NULL)
 		{
-			_timeout_function();
+			_timeout_function(100u);
 		}
 		/* should wait */
 	}
