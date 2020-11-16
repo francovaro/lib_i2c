@@ -8,7 +8,8 @@
  */
 
 #include "lib_i2c.h"
-#include "stm32f4xx.h"
+
+#define NULL ((void *)0)
 
 #ifdef FAST_I2C_MODE
 #define I2C_SPEED 340000
@@ -27,7 +28,11 @@
 }\
 }
 
+static ErrorStatus lib_I2C_check_timeout(uint32_t flag);
+
 static uint8_t _i2c_enabled[e_i2c_max] = {0};
+static void (*_timeout_function)(void) = NULL;
+
 I2C_TypeDef *yI2C;
 
 /**
@@ -35,9 +40,11 @@ I2C_TypeDef *yI2C;
  * @param i2c_number
  * @param ownAddress
  */
-void lib_I2C_init(t_i2c_number i2c_number, uint8_t ownAddress)
+ErrorStatus lib_I2C_init(t_i2c_number i2c_number, uint8_t ownAddress, void*(p_func))
 {
+	ErrorStatus	is_init = ERROR;
 	i2c_timeOut = 0;
+
 	if (_i2c_enabled[i2c_number] == 0)
 	{
 		I2C_InitTypeDef I2C_InitStructure;
@@ -63,7 +70,6 @@ void lib_I2C_init(t_i2c_number i2c_number, uint8_t ownAddress)
 
 				GPIO_PinAFConfig(GPIOB, GPIO_PinSource8, GPIO_AF_I2C1);	//
 				GPIO_PinAFConfig(GPIOB, GPIO_PinSource9, GPIO_AF_I2C1);
-				//GPIO_DeInit(GPIOA);
 				GPIO_InitStructure.GPIO_Pin =  GPIO_Pin_8 | GPIO_Pin_9;
 				GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
 				GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
@@ -76,6 +82,8 @@ void lib_I2C_init(t_i2c_number i2c_number, uint8_t ownAddress)
 				I2C_AcknowledgeConfig(I2C1, ENABLE) ;
 				I2C_Cmd(I2C1, ENABLE);
 				yI2C = I2C1;
+
+				is_init = SUCCESS;
 			}
 			break;
 			case e_i2c_2:	// for now... nothing
@@ -86,6 +94,7 @@ void lib_I2C_init(t_i2c_number i2c_number, uint8_t ownAddress)
 			}
 			break;
 		}
+		_timeout_function = p_func;
 		_i2c_enabled[i2c_number] = 1;
 	}
 	else
@@ -93,24 +102,7 @@ void lib_I2C_init(t_i2c_number i2c_number, uint8_t ownAddress)
 		// do nothing ?
 	}
 
-}
-
-/**
- *
- * @param i2c_number
- * @param data
- * @param toAddress
- */
-void lib_I2C_write_byte(t_i2c_number i2c_number, uint8_t data, uint8_t toAddress)
-{
-	if (_i2c_enabled[i2c_number] == 1)
-	{
-		I2C_GenerateSTART(yI2C , ENABLE);
-	}
-	else
-	{
-
-	}
+	return is_init;
 }
 
 /**
@@ -121,9 +113,11 @@ void lib_I2C_write_byte(t_i2c_number i2c_number, uint8_t data, uint8_t toAddress
  * @param toAddress
  * @return
  */
-int8_t lib_I2C_write_nbyte(t_i2c_number i2c_number, const uint8_t* data, uint8_t nbyte, uint8_t toAddress)
+ErrorStatus lib_I2C_write_nbyte(t_i2c_number i2c_number, const uint8_t* data, uint8_t nbyte, uint8_t toAddress)
 {
+	ErrorStatus written = ERROR;
 	uint8_t sent = 0;
+
 	if (_i2c_enabled[i2c_number] == 1)
 	{
 		i2c_timeOut = TIMEOUT_I2C;
@@ -153,35 +147,16 @@ int8_t lib_I2C_write_nbyte(t_i2c_number i2c_number, const uint8_t* data, uint8_t
 		Timed(!I2C_CheckEvent(yI2C, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
 
 		I2C_GenerateSTOP(yI2C, ENABLE);
+
+		written = SUCCESS;
 		//Timed(I2C_GetFlagStatus(yI2C, I2C_FLAG_STOPF));
 	}
 	else
 	{
-		return 1;
-	}
-
-	return 0;
-}
-
-/**
- *
- * @param i2c_number
- * @param data
- * @param toAddress
- * @return
- */
-uint8_t lib_I2C_read_byte(t_i2c_number i2c_number, uint8_t data, uint8_t toAddress)
-{
-	uint8_t byteRead = 0;
-	if (_i2c_enabled[i2c_number] == 1)
-	{
 
 	}
-	else
-	{
 
-	}
-	return byteRead;
+	return written;
 }
 
 /**
@@ -192,17 +167,59 @@ uint8_t lib_I2C_read_byte(t_i2c_number i2c_number, uint8_t data, uint8_t toAddre
  * @param toAddress
  * @return
  */
-uint8_t lib_I2C_read_nbyte(t_i2c_number i2c_number, uint8_t* data, uint8_t nByte, uint8_t toAddress)
+uint8_t lib_I2C_read_nbyte(t_i2c_number i2c_number, uint8_t* data, uint8_t fromAddress)
 {
 	uint8_t byteRead = 0;
+	uint8_t receiving = SET;
+
 	if (_i2c_enabled[i2c_number] == 1)
 	{
+		i2c_timeOut = TIMEOUT_I2C;
 
+		if (lib_I2C_check_timeout(I2C_FLAG_BUSY) == SUCCESS)
+		{
+			I2C_GenerateSTART(yI2C, ENABLE);
+			/*
+			 * After sending the START condition (I2C_GenerateSTART() function) the master
+			 * has to wait for this event.
+			 */
+			if (lib_I2C_check_timeout(I2C_EVENT_MASTER_MODE_SELECT) == SUCCESS)
+			{
+				I2C_Send7bitAddress(yI2C, fromAddress ,I2C_Direction_Transmitter);
+				if (lib_I2C_check_timeout(I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED) == SUCCESS)
+				{
+					while (receiving)
+					{
+						/*
+						 * Master Receiver mode: The master has to wait on the event EV7 then to read
+						 * the data received from the slave (I2C_ReceiveData() function).
+						 */
+						if (lib_I2C_check_timeout(I2C_EVENT_MASTER_BYTE_RECEIVED) == SUCCESS)
+						{
+							*data = I2C_ReceiveData(yI2C);
+							data++;
+							byteRead++;
+						}
+						else
+						{
+							receiving = RESET;
+						}
+					}
+				}
+			}
+			else	/* nothing ? */
+			{
+
+			}
+
+			I2C_GenerateSTOP(yI2C, ENABLE);
+		}
 	}
 	else
 	{
 
 	}
+
 	return byteRead;
 }
 
@@ -222,4 +239,34 @@ void lib_I2C_send_start(t_i2c_number i2c_number)
 void lib_I2C_send_stop(t_i2c_number i2c_number)
 {
 	I2C_GenerateSTOP(yI2C, ENABLE);
+}
+
+/**
+ *
+ * @param flag
+ * @return
+ */
+static ErrorStatus lib_I2C_check_timeout(uint32_t flag)
+{
+	ErrorStatus all_ok = SUCCESS;
+
+	i2c_timeOut = 5;
+
+	while (!I2C_CheckEvent(yI2C, flag)
+			&& (i2c_timeOut--))
+	{
+		if (_timeout_function != NULL)
+		{
+			_timeout_function();
+		}
+		/* should wait */
+	}
+
+	if (i2c_timeOut == 0)
+	{
+		I2C_GenerateSTOP(yI2C, ENABLE);
+		all_ok = ERROR;
+	}
+
+	return all_ok;
 }
